@@ -17,6 +17,8 @@ tls = true
 port = 1234
 listen_addr_ipv4 = "0.0.0.0"
 listen_addr_ipv6 = "::"
+# Enable PROXY protocol when behind Traefik/HAProxy to receive real client IPs
+proxy_protocol = true
 
 [censorship]
 tls_domain = "1c.ru"

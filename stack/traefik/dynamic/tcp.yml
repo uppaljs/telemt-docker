@@ -10,5 +10,7 @@ tcp:
   services:
     mtproxy:
       loadBalancer:
+        proxyProtocol:
+          version: 2
         servers:
           - address: "telemt:1234"
