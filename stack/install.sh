@@ -8,6 +8,7 @@ TELEMT_INTERNAL_PORT="${TELEMT_INTERNAL_PORT:-1234}"
 LISTEN_PORT="${LISTEN_PORT:-443}"
 SECRET=""
 ACTION=""
+INTERACTIVE=false
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,6 +19,17 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()   { echo -e "${RED}[ERR]${NC} $*"; exit 1; }
+
+# Read from /dev/tty so prompts work even when piped via curl | bash
+prompt_read() {
+    read -r "$@" </dev/tty
+}
+
+detect_interactive() {
+    if [[ -t 0 ]] || [[ -c /dev/tty ]]; then
+        INTERACTIVE=true
+    fi
+}
 
 usage() {
     echo "Usage: $(basename "$0") [install|uninstall|reinstall|status|link]"
@@ -111,9 +123,9 @@ prompt_port() {
         suggested=1443
     fi
     while true; do
-        if [[ -t 0 ]]; then
-            echo -n "Port for proxy [${suggested}]: "
-            read -r input
+        if $INTERACTIVE; then
+            echo -n "Port for proxy [${suggested}]: " >/dev/tty
+            prompt_read input
             [[ -z "$input" ]] && input=$suggested
         else
             input=$suggested
@@ -121,14 +133,14 @@ prompt_port() {
         if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 65535 )); then
             if is_port_in_use "$input"; then
                 warn "Port ${input} is in use, choose another."
-                [[ ! -t 0 ]] && err "Port ${input} is in use and running non-interactively."
+                $INTERACTIVE || err "Port ${input} is in use and running non-interactively."
             else
                 LISTEN_PORT=$input
                 return
             fi
         else
             warn "Enter a number from 1 to 65535."
-            [[ ! -t 0 ]] && err "Invalid port in non-interactive mode."
+            $INTERACTIVE || err "Invalid port in non-interactive mode."
         fi
     done
 }
@@ -136,9 +148,9 @@ prompt_port() {
 # ── Domain ──────────────────────────────────────────────────
 
 prompt_fake_domain() {
-    if [[ -t 0 ]]; then
-        echo -n "Domain for Fake TLS masking [${FAKE_DOMAIN}]: "
-        read -r input
+    if $INTERACTIVE; then
+        echo -n "Domain for Fake TLS masking [${FAKE_DOMAIN}]: " >/dev/tty
+        prompt_read input
         [[ -n "$input" ]] && FAKE_DOMAIN="$input"
     fi
     info "Fake TLS domain: ${FAKE_DOMAIN}"
@@ -153,20 +165,20 @@ generate_secret() {
 prompt_secret() {
     local generated
     generated=$(generate_secret)
-    if [[ -t 0 ]]; then
-        echo ""
-        echo -e "  Generated secret: ${CYAN}${generated}${NC}"
-        echo ""
-        echo -n "Use this secret? [Y/n] or paste your own 32-hex-char secret: "
-        read -r input
+    if $INTERACTIVE; then
+        echo "" >/dev/tty
+        echo -e "  Generated secret: ${CYAN}${generated}${NC}" >/dev/tty
+        echo "" >/dev/tty
+        echo -n "Use this secret? [Y/n] or paste your own 32-hex-char secret: " >/dev/tty
+        prompt_read input
         if [[ -z "$input" ]] || [[ "$input" =~ ^[Yy]$ ]]; then
             SECRET="$generated"
         elif [[ "$input" =~ ^[0-9a-fA-F]{32}$ ]]; then
             SECRET="$input"
         elif [[ "$input" =~ ^[Nn]$ ]]; then
             while true; do
-                echo -n "Enter your 32-hex-char secret: "
-                read -r input
+                echo -n "Enter your 32-hex-char secret: " >/dev/tty
+                prompt_read input
                 if [[ "$input" =~ ^[0-9a-fA-F]{32}$ ]]; then
                     SECRET="$input"
                     break
@@ -187,9 +199,9 @@ prompt_secret() {
 # ── Internal port ───────────────────────────────────────────
 
 prompt_internal_port() {
-    if [[ -t 0 ]]; then
-        echo -n "Internal Telemt port [${TELEMT_INTERNAL_PORT}]: "
-        read -r input
+    if $INTERACTIVE; then
+        echo -n "Internal Telemt port [${TELEMT_INTERNAL_PORT}]: " >/dev/tty
+        prompt_read input
         if [[ -n "$input" ]]; then
             if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 65535 )); then
                 TELEMT_INTERNAL_PORT=$input
@@ -310,9 +322,9 @@ print_link() {
 do_install() {
     if [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
         warn "Existing installation found at ${INSTALL_DIR}"
-        if [[ -t 0 ]]; then
-            echo -n "Reinstall from scratch? This will DELETE all data. [y/N]: "
-            read -r confirm
+        if $INTERACTIVE; then
+            echo -n "Reinstall from scratch? This will DELETE all data. [y/N]: " >/dev/tty
+            prompt_read confirm
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 do_uninstall
             else
@@ -342,9 +354,9 @@ do_install() {
     echo -e "  Install dir:     ${GREEN}${INSTALL_DIR}${NC}"
     echo ""
 
-    if [[ -t 0 ]]; then
-        echo -n "Proceed with installation? [Y/n]: "
-        read -r confirm
+    if $INTERACTIVE; then
+        echo -n "Proceed with installation? [Y/n]: " >/dev/tty
+        prompt_read confirm
         if [[ "$confirm" =~ ^[Nn]$ ]]; then
             info "Aborted."
             exit 0
@@ -363,11 +375,11 @@ do_uninstall() {
         return 0
     fi
 
-    if [[ -t 0 ]] && [[ "$ACTION" != "reinstall" ]]; then
+    if $INTERACTIVE && [[ "$ACTION" != "reinstall" ]]; then
         echo ""
         warn "This will stop all containers and DELETE ${INSTALL_DIR}"
-        echo -n "Are you sure? [y/N]: "
-        read -r confirm
+        echo -n "Are you sure? [y/N]: " >/dev/tty
+        prompt_read confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             info "Aborted."
             exit 0
@@ -409,6 +421,7 @@ do_link() {
 
 main() {
     [[ "${INSTALL_DIR}" != /* ]] && INSTALL_DIR="$(pwd)/${INSTALL_DIR}"
+    detect_interactive
 
     local cmd="${1:-install}"
     case "$cmd" in
