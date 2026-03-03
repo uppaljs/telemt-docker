@@ -27,6 +27,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=16m
+      - /usr/local/bin/cache:rw,nosuid,nodev,noexec,size=32m
 
     # Resource limits (optional)
     deploy:
