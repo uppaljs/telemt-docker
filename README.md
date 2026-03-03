@@ -161,12 +161,33 @@ The `stack/` directory contains a production-ready deployment with **Traefik** a
 curl -sSL https://raw.githubusercontent.com/uppaljs/telemt-docker/main/stack/install.sh | bash
 ```
 
-The installer will:
+The interactive installer will:
 1. Install Docker if not present
-2. Ask for a listen port (default `443`) and Fake TLS domain (default `1c.ru`)
-3. Generate a random secret
-4. Download and configure all files
-5. Start the stack and print your `tg://proxy` link
+2. Ask for a listen port (default `443`)
+3. Ask for a Fake TLS masking domain (default `1c.ru`)
+4. Generate a random secret (or let you provide your own)
+5. Ask for an internal Telemt port (default `1234`)
+6. Show a summary and ask for confirmation
+7. Download, configure, start, and print your `tg://proxy` link
+
+### Installer commands
+
+```bash
+# Install (default)
+bash install.sh install
+
+# Show status and proxy link
+bash install.sh status
+
+# Print just the proxy link
+bash install.sh link
+
+# Uninstall — stops containers and removes all data
+bash install.sh uninstall
+
+# Reinstall — clean uninstall + fresh install
+bash install.sh reinstall
+```
 
 ### Manual setup
 
@@ -183,7 +204,7 @@ docker compose up -d
 ```
 stack/
 ├── docker-compose.yml        # Traefik + Telemt services
-├── install.sh                # One-line installer script
+├── install.sh                # Installer (install/uninstall/reinstall/status/link)
 ├── telemt.toml.example       # Sample Telemt config
 └── traefik/
     ├── dynamic/
