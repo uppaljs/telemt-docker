@@ -151,6 +151,58 @@ docker run ... uppal/telemt-docker:latest /path/to/config.toml
 
 ---
 
+## Traefik + Telemt Stack (One-Line Install)
+
+The `stack/` directory contains a production-ready deployment with **Traefik** as a TLS-passthrough reverse proxy in front of Telemt.
+
+### One-line install
+
+```bash
+curl -sSL https://raw.githubusercontent.com/uppaljs/telemt-docker/main/stack/install.sh | bash
+```
+
+The installer will:
+1. Install Docker if not present
+2. Ask for a listen port (default `443`) and Fake TLS domain (default `1c.ru`)
+3. Generate a random secret
+4. Download and configure all files
+5. Start the stack and print your `tg://proxy` link
+
+### Manual setup
+
+```bash
+git clone https://github.com/uppaljs/telemt-docker.git
+cd telemt-docker/stack
+cp telemt.toml.example telemt.toml
+# Edit telemt.toml — replace REPLACE_WITH_32_HEX_CHARS with: openssl rand -hex 16
+docker compose up -d
+```
+
+### Stack layout
+
+```
+stack/
+├── docker-compose.yml        # Traefik + Telemt services
+├── install.sh                # One-line installer script
+├── telemt.toml.example       # Sample Telemt config
+└── traefik/
+    ├── dynamic/
+    │   └── tcp.yml           # TLS passthrough routing to Telemt
+    └── static/
+        └── .gitkeep
+```
+
+### Environment variables (installer)
+
+| Variable | Default | Description |
+|---|---|---|
+| `LISTEN_PORT` | `443` | External port for the proxy |
+| `FAKE_DOMAIN` | `1c.ru` | Domain for Fake TLS masking |
+| `TELEMT_INTERNAL_PORT` | `1234` | Internal Telemt listen port |
+| `INSTALL_DIR` | `./mtproxy-data` | Where files are downloaded |
+
+---
+
 ## Build
 
 This Dockerfile supports pinning upstream Telemt source:
