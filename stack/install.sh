@@ -20,13 +20,23 @@ info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()   { echo -e "${RED}[ERR]${NC} $*"; exit 1; }
 
-# Read from /dev/tty so prompts work even when piped via curl | bash
-prompt_read() {
-    read -r "$@" </dev/tty
+# Prompt and read from /dev/tty so it works when piped via curl | bash.
+# When stdin is a pipe, normal read/echo go to the pipe, not the user.
+# /dev/tty always refers to the controlling terminal.
+say() {
+    echo -e "$@" >/dev/tty
+}
+say_n() {
+    echo -n -e "$@" >/dev/tty
+}
+ask() {
+    local var="$1"
+    IFS= read -r "$var" </dev/tty
 }
 
 detect_interactive() {
-    if [[ -t 0 ]] || [[ -c /dev/tty ]]; then
+    # Try writing to /dev/tty — if it works, we have a terminal
+    if (echo -n >/dev/tty) 2>/dev/null; then
         INTERACTIVE=true
     fi
 }
@@ -122,25 +132,24 @@ prompt_port() {
         warn "Port 443 is in use."
         suggested=1443
     fi
+    if ! $INTERACTIVE; then
+        LISTEN_PORT=$suggested
+        return
+    fi
+    local input
     while true; do
-        if $INTERACTIVE; then
-            echo -n "Port for proxy [${suggested}]: " >/dev/tty
-            prompt_read input
-            [[ -z "$input" ]] && input=$suggested
-        else
-            input=$suggested
-        fi
+        say_n "Port for proxy [${suggested}]: "
+        ask input
+        [[ -z "$input" ]] && input=$suggested
         if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 65535 )); then
             if is_port_in_use "$input"; then
                 warn "Port ${input} is in use, choose another."
-                $INTERACTIVE || err "Port ${input} is in use and running non-interactively."
             else
                 LISTEN_PORT=$input
                 return
             fi
         else
             warn "Enter a number from 1 to 65535."
-            $INTERACTIVE || err "Invalid port in non-interactive mode."
         fi
     done
 }
@@ -149,8 +158,9 @@ prompt_port() {
 
 prompt_fake_domain() {
     if $INTERACTIVE; then
-        echo -n "Domain for Fake TLS masking [${FAKE_DOMAIN}]: " >/dev/tty
-        prompt_read input
+        local input
+        say_n "Domain for Fake TLS masking [${FAKE_DOMAIN}]: "
+        ask input
         [[ -n "$input" ]] && FAKE_DOMAIN="$input"
     fi
     info "Fake TLS domain: ${FAKE_DOMAIN}"
@@ -163,34 +173,35 @@ generate_secret() {
 }
 
 prompt_secret() {
-    local generated
+    local generated input
     generated=$(generate_secret)
-    if $INTERACTIVE; then
-        echo "" >/dev/tty
-        echo -e "  Generated secret: ${CYAN}${generated}${NC}" >/dev/tty
-        echo "" >/dev/tty
-        echo -n "Use this secret? [Y/n] or paste your own 32-hex-char secret: " >/dev/tty
-        prompt_read input
-        if [[ -z "$input" ]] || [[ "$input" =~ ^[Yy]$ ]]; then
-            SECRET="$generated"
-        elif [[ "$input" =~ ^[0-9a-fA-F]{32}$ ]]; then
-            SECRET="$input"
-        elif [[ "$input" =~ ^[Nn]$ ]]; then
-            while true; do
-                echo -n "Enter your 32-hex-char secret: " >/dev/tty
-                prompt_read input
-                if [[ "$input" =~ ^[0-9a-fA-F]{32}$ ]]; then
-                    SECRET="$input"
-                    break
-                else
-                    warn "Invalid secret. Must be exactly 32 hex characters."
-                fi
-            done
-        else
-            warn "Invalid input. Using generated secret."
-            SECRET="$generated"
-        fi
+    if ! $INTERACTIVE; then
+        SECRET="$generated"
+        info "Secret: ${SECRET}"
+        return
+    fi
+    say ""
+    say "  Generated secret: ${CYAN}${generated}${NC}"
+    say ""
+    say_n "Use this secret? [Y/n] or paste your own 32-hex-char secret: "
+    ask input
+    if [[ -z "$input" ]] || [[ "$input" =~ ^[Yy]$ ]]; then
+        SECRET="$generated"
+    elif [[ "$input" =~ ^[0-9a-fA-F]{32}$ ]]; then
+        SECRET="$input"
+    elif [[ "$input" =~ ^[Nn]$ ]]; then
+        while true; do
+            say_n "Enter your 32-hex-char secret: "
+            ask input
+            if [[ "$input" =~ ^[0-9a-fA-F]{32}$ ]]; then
+                SECRET="$input"
+                break
+            else
+                warn "Invalid secret. Must be exactly 32 hex characters."
+            fi
+        done
     else
+        warn "Invalid input. Using generated secret."
         SECRET="$generated"
     fi
     info "Secret: ${SECRET}"
@@ -200,8 +211,9 @@ prompt_secret() {
 
 prompt_internal_port() {
     if $INTERACTIVE; then
-        echo -n "Internal Telemt port [${TELEMT_INTERNAL_PORT}]: " >/dev/tty
-        prompt_read input
+        local input
+        say_n "Internal Telemt port [${TELEMT_INTERNAL_PORT}]: "
+        ask input
         if [[ -n "$input" ]]; then
             if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= 1 && input <= 65535 )); then
                 TELEMT_INTERNAL_PORT=$input
@@ -323,8 +335,8 @@ do_install() {
     if [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
         warn "Existing installation found at ${INSTALL_DIR}"
         if $INTERACTIVE; then
-            echo -n "Reinstall from scratch? This will DELETE all data. [y/N]: " >/dev/tty
-            prompt_read confirm
+            say_n "Reinstall from scratch? This will DELETE all data. [y/N]: "
+            ask confirm
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 do_uninstall
             else
@@ -355,8 +367,8 @@ do_install() {
     echo ""
 
     if $INTERACTIVE; then
-        echo -n "Proceed with installation? [Y/n]: " >/dev/tty
-        prompt_read confirm
+        say_n "Proceed with installation? [Y/n]: "
+        ask confirm
         if [[ "$confirm" =~ ^[Nn]$ ]]; then
             info "Aborted."
             exit 0
@@ -376,10 +388,10 @@ do_uninstall() {
     fi
 
     if $INTERACTIVE && [[ "$ACTION" != "reinstall" ]]; then
-        echo ""
+        say ""
         warn "This will stop all containers and DELETE ${INSTALL_DIR}"
-        echo -n "Are you sure? [y/N]: " >/dev/tty
-        prompt_read confirm
+        say_n "Are you sure? [y/N]: "
+        ask confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             info "Aborted."
             exit 0
