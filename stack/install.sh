@@ -6,6 +6,7 @@ INSTALL_DIR="${INSTALL_DIR:-$(pwd)/mtproxy-data}"
 FAKE_DOMAIN="${FAKE_DOMAIN:-1c.ru}"
 TELEMT_INTERNAL_PORT="${TELEMT_INTERNAL_PORT:-1234}"
 LISTEN_PORT="${LISTEN_PORT:-443}"
+SERVER_ADDR="${SERVER_ADDR:-}"
 SECRET=""
 ACTION=""
 INTERACTIVE=false
@@ -52,6 +53,7 @@ usage() {
     echo "  link        Print the tg://proxy link"
     echo ""
     echo "Environment variables:"
+    echo "  SERVER_ADDR   Server domain or IP for the proxy link"
     echo "  INSTALL_DIR   Install directory (default: ./mtproxy-data)"
     echo "  LISTEN_PORT   External port (default: 443)"
     echo "  FAKE_DOMAIN   Fake TLS domain (default: 1c.ru)"
@@ -78,6 +80,12 @@ rerun_cmd() {
 
 # ── Docker ──────────────────────────────────────────────────
 
+need_sudo() {
+    if [[ "$(id -u)" -ne 0 ]]; then
+        echo "sudo"
+    fi
+}
+
 check_docker() {
     if command -v docker &>/dev/null; then
         if docker info &>/dev/null 2>&1; then
@@ -87,7 +95,7 @@ check_docker() {
         echo ""
         warn "Docker is installed but the current user is not in the docker group."
         echo ""
-        echo "Run the following command (add to group and apply):"
+        echo "Run the following commands:"
         echo -e "  ${GREEN}sudo usermod -aG docker \$USER && newgrp docker${NC}"
         echo ""
         echo "Then run this script again:"
@@ -95,20 +103,41 @@ check_docker() {
         echo ""
         exit 1
     fi
-    info "Installing Docker..."
-    curl -fsSL https://get.docker.com | sh
-    if ! docker info &>/dev/null 2>&1; then
-        echo ""
-        warn "Docker installed. You need to add the user to the docker group."
-        echo ""
-        echo "Run the following command:"
-        echo -e "  ${GREEN}sudo usermod -aG docker \$USER && newgrp docker${NC}"
-        echo ""
-        echo "Then run this script again:"
-        echo -e "  ${GREEN}$(rerun_cmd)${NC}"
-        echo ""
-        exit 1
+
+    info "Docker not found. Installing Docker..."
+    echo ""
+    local sudo_cmd
+    sudo_cmd=$(need_sudo)
+    if ! curl -fsSL https://get.docker.com | ${sudo_cmd} sh; then
+        err "Docker installation failed. Install Docker manually and re-run this script."
     fi
+    info "Docker installed successfully."
+
+    # If not root, add current user to docker group
+    if [[ "$(id -u)" -ne 0 ]]; then
+        if ! groups | grep -qw docker; then
+            info "Adding $(whoami) to the docker group..."
+            sudo usermod -aG docker "$(whoami)" || true
+        fi
+    fi
+
+    # Check if docker works now
+    if docker info &>/dev/null 2>&1; then
+        info "Docker is ready."
+        return 0
+    fi
+
+    # Docker installed but group not active in current session
+    echo ""
+    warn "Docker installed, but you need to activate the docker group."
+    echo ""
+    echo "Run the following command:"
+    echo -e "  ${GREEN}newgrp docker${NC}"
+    echo ""
+    echo "Then run this script again:"
+    echo -e "  ${GREEN}$(rerun_cmd)${NC}"
+    echo ""
+    exit 1
 }
 
 # ── Port ────────────────────────────────────────────────────
@@ -152,6 +181,61 @@ prompt_port() {
             warn "Enter a number from 1 to 65535."
         fi
     done
+}
+
+# ── Server address ──────────────────────────────────────────
+
+detect_server_ip() {
+    # Try IPv4 first (curl -4), then fall back to any
+    local raw
+    for url in https://ifconfig.me/ip https://icanhazip.com https://api.ipify.org https://checkip.amazonaws.com; do
+        raw=$(curl -4 -s --connect-timeout 3 "$url" 2>/dev/null | tr -d '\n\r') || true
+        if [[ -n "$raw" ]] && [[ "$raw" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$raw"
+            return
+        fi
+    done
+    # Fall back to any IP (may be IPv6)
+    for url in https://ifconfig.me/ip https://icanhazip.com https://api.ipify.org; do
+        raw=$(curl -s --connect-timeout 3 "$url" 2>/dev/null | tr -d '\n\r') || true
+        if [[ -n "$raw" ]] && [[ ! "$raw" =~ [[:space:]] ]] && [[ "$raw" =~ ^([0-9.]+|[0-9a-fA-F:]+)$ ]]; then
+            echo "$raw"
+            return
+        fi
+    done
+}
+
+prompt_server_addr() {
+    local detected
+    detected=$(detect_server_ip)
+    if $INTERACTIVE; then
+        local input
+        if [[ -n "$detected" ]]; then
+            say ""
+            say "  Detected server IP: ${CYAN}${detected}${NC}"
+            say ""
+            say_n "Server address (domain, IPv4, or IPv6) [${detected}]: "
+            ask input
+            if [[ -n "$input" ]]; then
+                SERVER_ADDR="$input"
+            else
+                SERVER_ADDR="$detected"
+            fi
+        else
+            say_n "Server address (domain or IP) — could not auto-detect: "
+            ask input
+            if [[ -n "$input" ]]; then
+                SERVER_ADDR="$input"
+            else
+                SERVER_ADDR="YOUR_SERVER_IP"
+                warn "No server address provided. Replace YOUR_SERVER_IP in the link manually."
+            fi
+        fi
+    else
+        SERVER_ADDR="${detected:-YOUR_SERVER_IP}"
+        [[ "$SERVER_ADDR" == "YOUR_SERVER_IP" ]] && warn "Could not detect server IP."
+    fi
+    info "Server address: ${SERVER_ADDR}"
 }
 
 # ── Domain ──────────────────────────────────────────────────
@@ -249,6 +333,7 @@ download_and_configure() {
 
     printf '%s' "$SECRET" > "${INSTALL_DIR}/.secret"
     printf '%s' "$LISTEN_PORT" > "${INSTALL_DIR}/.port"
+    printf '%s' "$SERVER_ADDR" > "${INSTALL_DIR}/.server"
 }
 
 # ── Compose ─────────────────────────────────────────────────
@@ -274,7 +359,8 @@ build_link() {
     local secret="$1"
     local port="$2"
     local tls_domain="$3"
-    local domain_hex long_secret server_ip
+    local server="$4"
+    local domain_hex long_secret
 
     domain_hex=$(printf '%s' "$tls_domain" | od -An -tx1 | tr -d ' \n')
     if [[ "$secret" =~ ^[0-9a-fA-F]{32}$ ]]; then
@@ -283,24 +369,11 @@ build_link() {
         long_secret="$secret"
     fi
 
-    server_ip=""
-    for url in https://ifconfig.me/ip https://icanhazip.com https://api.ipify.org https://checkip.amazonaws.com; do
-        raw=$(curl -s --connect-timeout 3 "$url" 2>/dev/null | tr -d '\n\r')
-        if [[ -n "$raw" ]] && [[ ! "$raw" =~ [[:space:]] ]] && [[ ! "$raw" =~ (error|timeout|upstream|reset|refused) ]] && [[ "$raw" =~ ^([0-9.]+|[0-9a-fA-F:]+)$ ]]; then
-            server_ip="$raw"
-            break
-        fi
-    done
-    if [[ -z "$server_ip" ]]; then
-        server_ip="YOUR_SERVER_IP"
-        warn "Could not detect external IP. Replace YOUR_SERVER_IP in the link manually."
-    fi
-
-    echo "tg://proxy?server=${server_ip}&port=${port}&secret=${long_secret}"
+    echo "tg://proxy?server=${server}&port=${port}&secret=${long_secret}"
 }
 
 print_link() {
-    local secret port tls_domain link
+    local secret port tls_domain server link
 
     secret=$(cat "${INSTALL_DIR}/.secret" 2>/dev/null | tr -d '\n\r')
     [[ -z "$secret" ]] && err "Secret not found in ${INSTALL_DIR}/.secret"
@@ -308,11 +381,17 @@ print_link() {
     port=$(cat "${INSTALL_DIR}/.port" 2>/dev/null | tr -d '\n\r')
     [[ -z "$port" ]] && port="$LISTEN_PORT"
 
+    server=$(cat "${INSTALL_DIR}/.server" 2>/dev/null | tr -d '\n\r')
+    if [[ -z "$server" ]]; then
+        server=$(detect_server_ip)
+        [[ -z "$server" ]] && server="YOUR_SERVER_IP"
+    fi
+
     tls_domain=$(grep -E '^[[:space:]]*tls_domain[[:space:]]*=' "${INSTALL_DIR}/telemt.toml" \
         | head -n1 | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/')
     [[ -z "$tls_domain" ]] && err "tls_domain not found in ${INSTALL_DIR}/telemt.toml"
 
-    link=$(build_link "$secret" "$port" "$tls_domain")
+    link=$(build_link "$secret" "$port" "$tls_domain" "$server")
 
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -352,6 +431,7 @@ do_install() {
     echo ""
     echo -e "${CYAN}── MTProxy Configuration ──────────────────────────────────${NC}"
     echo ""
+    prompt_server_addr
     prompt_port
     prompt_fake_domain
     prompt_secret
@@ -359,6 +439,7 @@ do_install() {
     echo ""
     echo -e "${CYAN}── Summary ────────────────────────────────────────────────${NC}"
     echo ""
+    echo -e "  Server address:  ${GREEN}${SERVER_ADDR}${NC}"
     echo -e "  Listen port:     ${GREEN}${LISTEN_PORT}${NC}"
     echo -e "  Fake TLS domain: ${GREEN}${FAKE_DOMAIN}${NC}"
     echo -e "  Secret:          ${GREEN}${SECRET}${NC}"
