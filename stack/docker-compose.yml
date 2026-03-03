@@ -8,11 +8,16 @@ services:
       - "--entrypoints.websecure.address=:443"
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--providers.file.watch=true"
+      - "--accesslog=true"
+      - "--accesslog.filepath=/var/log/traefik/access.log"
+      - "--accesslog.format=json"
+      - "--accesslog.bufferingsize=100"
     ports:
       - "443:443"
     volumes:
       - ./traefik/static:/etc/traefik/static:ro
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./logs:/var/log/traefik
     networks:
       - mtproxy
 

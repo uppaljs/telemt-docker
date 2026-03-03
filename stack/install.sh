@@ -47,6 +47,7 @@ usage() {
     echo ""
     echo "Commands:"
     echo "  install     Install and start the MTProxy stack (default)"
+    echo "  update      Update stack files and images (keeps your config)"
     echo "  uninstall   Stop containers and remove all data"
     echo "  reinstall   Uninstall then install fresh"
     echo "  status      Show container status and proxy link"
@@ -312,7 +313,7 @@ prompt_internal_port() {
 
 download_and_configure() {
     info "Downloading files from ${REPO_RAW} ..."
-    mkdir -p "${INSTALL_DIR}/traefik/dynamic" "${INSTALL_DIR}/traefik/static"
+    mkdir -p "${INSTALL_DIR}/traefik/dynamic" "${INSTALL_DIR}/traefik/static" "${INSTALL_DIR}/logs"
 
     fetch "${REPO_RAW}/docker-compose.yml" "${INSTALL_DIR}/docker-compose.yml"
     sed "s/443:443/${LISTEN_PORT}:443/" "${INSTALL_DIR}/docker-compose.yml" > "${INSTALL_DIR}/docker-compose.yml.tmp" && mv "${INSTALL_DIR}/docker-compose.yml.tmp" "${INSTALL_DIR}/docker-compose.yml"
@@ -334,6 +335,21 @@ download_and_configure() {
     printf '%s' "$SECRET" > "${INSTALL_DIR}/.secret"
     printf '%s' "$LISTEN_PORT" > "${INSTALL_DIR}/.port"
     printf '%s' "$SERVER_ADDR" > "${INSTALL_DIR}/.server"
+
+    # Set up daily log rotation
+    fetch "${REPO_RAW}/traefik-logrotate.conf" "${INSTALL_DIR}/traefik-logrotate.conf"
+    local sudo_cmd
+    sudo_cmd=$(need_sudo)
+    local logrotate_src="${INSTALL_DIR}/traefik-logrotate.conf"
+    local logrotate_dst="/etc/logrotate.d/traefik-mtproxy"
+    # Rewrite the path to match the actual logs directory
+    sed "s|/var/log/traefik/access.log|${INSTALL_DIR}/logs/access.log|" \
+        "$logrotate_src" > "${logrotate_src}.tmp" && mv "${logrotate_src}.tmp" "$logrotate_src"
+    if ${sudo_cmd} cp "$logrotate_src" "$logrotate_dst" 2>/dev/null; then
+        info "Installed daily log rotation to ${logrotate_dst}"
+    else
+        warn "Could not install logrotate config. Logs will not auto-rotate."
+    fi
 }
 
 # ── Compose ─────────────────────────────────────────────────
@@ -503,6 +519,64 @@ do_status() {
     print_link
 }
 
+do_update() {
+    if [[ ! -f "${INSTALL_DIR}/docker-compose.yml" ]] || [[ ! -f "${INSTALL_DIR}/telemt.toml" ]]; then
+        err "No existing installation found at ${INSTALL_DIR}. Run 'install' first."
+    fi
+
+    check_docker
+
+    # Read saved config
+    local secret port server internal_port
+    secret=$(cat "${INSTALL_DIR}/.secret" 2>/dev/null | tr -d '\n\r')
+    port=$(cat "${INSTALL_DIR}/.port" 2>/dev/null | tr -d '\n\r')
+    server=$(cat "${INSTALL_DIR}/.server" 2>/dev/null | tr -d '\n\r')
+    internal_port=$(grep -E '^[[:space:]]*port[[:space:]]*=' "${INSTALL_DIR}/telemt.toml" \
+        | head -n1 | sed -E 's/.*=[[:space:]]*//' | tr -d '"' | tr -d ' ')
+
+    [[ -z "$port" ]] && port="$LISTEN_PORT"
+    [[ -z "$internal_port" ]] && internal_port="$TELEMT_INTERNAL_PORT"
+    [[ -z "$server" ]] && server=$(detect_server_ip)
+
+    info "Updating stack files (config preserved)..."
+    echo ""
+    echo -e "  Port:          ${GREEN}${port}${NC}"
+    echo -e "  Internal port: ${GREEN}${internal_port}${NC}"
+    echo -e "  Server:        ${GREEN}${server:-unknown}${NC}"
+    echo ""
+
+    # Re-download stack files
+    mkdir -p "${INSTALL_DIR}/traefik/dynamic" "${INSTALL_DIR}/traefik/static" "${INSTALL_DIR}/logs"
+
+    fetch "${REPO_RAW}/docker-compose.yml" "${INSTALL_DIR}/docker-compose.yml"
+    sed "s/443:443/${port}:443/" "${INSTALL_DIR}/docker-compose.yml" > "${INSTALL_DIR}/docker-compose.yml.tmp" \
+        && mv "${INSTALL_DIR}/docker-compose.yml.tmp" "${INSTALL_DIR}/docker-compose.yml"
+
+    fetch "${REPO_RAW}/traefik/dynamic/tcp.yml" "${INSTALL_DIR}/traefik/dynamic/tcp.yml"
+    sed "s/telemt:1234/telemt:${internal_port}/g" \
+        "${INSTALL_DIR}/traefik/dynamic/tcp.yml" > "${INSTALL_DIR}/traefik/dynamic/tcp.yml.tmp" \
+        && mv "${INSTALL_DIR}/traefik/dynamic/tcp.yml.tmp" "${INSTALL_DIR}/traefik/dynamic/tcp.yml"
+
+    # Update logrotate config
+    fetch "${REPO_RAW}/traefik-logrotate.conf" "${INSTALL_DIR}/traefik-logrotate.conf"
+    local sudo_cmd
+    sudo_cmd=$(need_sudo)
+    sed "s|/var/log/traefik/access.log|${INSTALL_DIR}/logs/access.log|" \
+        "${INSTALL_DIR}/traefik-logrotate.conf" > "${INSTALL_DIR}/traefik-logrotate.conf.tmp" \
+        && mv "${INSTALL_DIR}/traefik-logrotate.conf.tmp" "${INSTALL_DIR}/traefik-logrotate.conf"
+    if ${sudo_cmd} cp "${INSTALL_DIR}/traefik-logrotate.conf" /etc/logrotate.d/traefik-mtproxy 2>/dev/null; then
+        info "Updated logrotate config."
+    fi
+
+    # Pull latest images and restart
+    info "Pulling latest images..."
+    cd "${INSTALL_DIR}"
+    docker compose pull -q 2>/dev/null || true
+    docker compose up -d
+    info "Stack updated and restarted."
+    print_link
+}
+
 do_link() {
     if [[ ! -f "${INSTALL_DIR}/telemt.toml" ]]; then
         err "No installation found at ${INSTALL_DIR}"
@@ -519,6 +593,7 @@ main() {
     local cmd="${1:-install}"
     case "$cmd" in
         install)    do_install ;;
+        update)     do_update ;;
         uninstall)  do_uninstall ;;
         reinstall)  do_reinstall ;;
         status)     do_status ;;
